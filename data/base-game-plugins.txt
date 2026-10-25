@@ -1,0 +1,6 @@
+# Explicit order for the unmodded Steam game. This is not a profile's full load order.
+Skyrim.esm
+Update.esm
+Dawnguard.esm
+HearthFires.esm
+Dragonborn.esm

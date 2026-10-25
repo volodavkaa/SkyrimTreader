@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "loadOrder": ["Skyrim.esm"],
+  "records": [
+    {
+      "formKey": "05ACE4:Skyrim.esm",
+      "editorId": "IngotIron",
+      "type": "MISC",
+      "baseValue": 7,
+      "winningPlugin": "Skyrim.esm",
+      "commodity": "iron",
+      "units": 2
+    },
+    {
+      "formKey": "000001:Skyrim.esm",
+      "editorId": "Unmapped",
+      "type": "MISC",
+      "baseValue": 7,
+      "winningPlugin": "Skyrim.esm",
+      "commodity": null,
+      "units": 0
+    }
+  ]
+}

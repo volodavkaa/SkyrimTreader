@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "priceSensitivity": 0.45,
+  "minMultiplier": 0.7,
+  "maxMultiplier": 1.6,
+  "maxDailyPriceChange": 0.15,
+  "minTradeMargin": 0.08,
+  "minShipmentQuantity": 10,
+  "commodities": {
+    "food": { "name": "Їжа", "baseValue": 10, "surplusSpoilageRate": 0.03 },
+    "iron": { "name": "Залізо", "baseValue": 20 }
+  },
+  "regions": {
+    "markarth": {
+      "name": "Маркарт",
+      "markets": {
+        "food": { "initialStock": 65, "targetStock": 100, "dailyProduction": 3, "dailyConsumption": 8, "reserveStock": 70 },
+        "iron": { "initialStock": 170, "targetStock": 100, "dailyProduction": 14, "dailyConsumption": 5, "reserveStock": 110 }
+      }
+    },
+    "whiterun": {
+      "name": "Вайтран",
+      "markets": {
+        "food": { "initialStock": 155, "targetStock": 100, "dailyProduction": 18, "dailyConsumption": 8, "reserveStock": 110 },
+        "iron": { "initialStock": 75, "targetStock": 100, "dailyProduction": 3, "dailyConsumption": 7, "reserveStock": 75 }
+      }
+    },
+    "riften": {
+      "name": "Ріфтен",
+      "markets": {
+        "food": { "initialStock": 85, "targetStock": 100, "dailyProduction": 7, "dailyConsumption": 9, "reserveStock": 75 },
+        "iron": { "initialStock": 55, "targetStock": 100, "dailyProduction": 2, "dailyConsumption": 7, "reserveStock": 60 }
+      }
+    }
+  },
+  "routes": [
+    { "id": "markarth-whiterun", "from": "markarth", "to": "whiterun", "travelDays": 2, "capacity": 35, "costFraction": 0.04, "risk": 0.12 },
+    { "id": "whiterun-markarth", "from": "whiterun", "to": "markarth", "travelDays": 2, "capacity": 35, "costFraction": 0.04, "risk": 0.12 },
+    { "id": "whiterun-riften", "from": "whiterun", "to": "riften", "travelDays": 2, "capacity": 30, "costFraction": 0.05, "risk": 0.15 },
+    { "id": "riften-whiterun", "from": "riften", "to": "whiterun", "travelDays": 2, "capacity": 30, "costFraction": 0.05, "risk": 0.15 }
+  ],
+  "shocks": [
+    { "id": "riften-food-raid", "day": 4, "region": "riften", "commodity": "food", "stockDelta": -35, "blockRoute": "whiterun-riften", "blockDays": 2 }
+  ]
+}

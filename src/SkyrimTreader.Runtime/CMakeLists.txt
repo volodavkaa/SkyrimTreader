@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.24)
+project(SimulatedTradeRoutes VERSION 0.1.0 LANGUAGES CXX)
+
+set(SKSE_SDK_ROOT "" CACHE PATH "Path to the extracted SKSE 2.3.1 source directory")
+option(STR_DIAGNOSTIC_FORMS "Log a live iron ingot value at game data/save load" OFF)
+if(NOT EXISTS "${SKSE_SDK_ROOT}/skse64/PluginAPI.h" OR
+   NOT EXISTS "${SKSE_SDK_ROOT}/skse64_common/skse_version.h")
+    message(FATAL_ERROR "Set SKSE_SDK_ROOT to the extracted SKSE 2.3.1 source directory")
+endif()
+
+add_library(SimulatedTradeRoutes SHARED skse_plugin.cpp)
+target_compile_features(SimulatedTradeRoutes PRIVATE cxx_std_20)
+target_compile_definitions(SimulatedTradeRoutes PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(SimulatedTradeRoutes PRIVATE "${SKSE_SDK_ROOT}")
+if(STR_DIAGNOSTIC_FORMS)
+    target_compile_definitions(SimulatedTradeRoutes PRIVATE STR_DIAGNOSTIC_FORMS=1)
+endif()
+set_target_properties(SimulatedTradeRoutes PROPERTIES OUTPUT_NAME "SimulatedTradeRoutes")
