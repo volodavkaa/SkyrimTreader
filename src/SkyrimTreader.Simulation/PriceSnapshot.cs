@@ -12,7 +12,7 @@ public sealed class PriceSnapshot
     public Dictionary<string, Dictionary<string, PriceEntry>> Regions { get; set; } = new();
 
     public static PriceSnapshot Load(string path) =>
-        JsonSerializer.Deserialize<PriceSnapshot>(File.ReadAllText(path), EconomyJson.Options)
+        JsonSerializer.Deserialize(File.ReadAllText(path), EconomyJson.Context.PriceSnapshot)
         ?? throw new InvalidDataException("Price snapshot is empty.");
 
     public void Validate(EconomyConfig config, ItemCatalog catalog, string catalogFingerprint)
@@ -83,7 +83,7 @@ public sealed class PriceSnapshot
         var absolutePath = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
         var temporaryPath = absolutePath + ".tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, EconomyJson.Options));
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, EconomyJson.Context.PriceSnapshot));
         File.Move(temporaryPath, absolutePath, true);
     }
 }

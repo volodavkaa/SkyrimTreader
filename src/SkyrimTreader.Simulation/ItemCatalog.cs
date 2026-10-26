@@ -11,7 +11,7 @@ public sealed class ItemCatalog
 
     public static ItemCatalog Load(string path, EconomyConfig config)
     {
-        var catalog = JsonSerializer.Deserialize<ItemCatalog>(File.ReadAllText(path), EconomyJson.Options)
+        var catalog = JsonSerializer.Deserialize(File.ReadAllText(path), EconomyJson.Context.ItemCatalog)
             ?? throw new InvalidDataException("Item catalog is empty.");
         if (catalog.SchemaVersion != 1) throw new InvalidDataException("Unsupported item catalog schema.");
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

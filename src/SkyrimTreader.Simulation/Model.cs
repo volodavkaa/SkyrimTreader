@@ -115,18 +115,19 @@ public static class EconomyJson
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter<ShipmentStatus>() }
     };
+    public static readonly EconomyJsonContext Context = new(Options);
 
     public static EconomyConfig LoadConfig(string path) =>
-        JsonSerializer.Deserialize<EconomyConfig>(File.ReadAllText(path), Options)
+        JsonSerializer.Deserialize(File.ReadAllText(path), Context.EconomyConfig)
         ?? throw new InvalidDataException("Config is empty.");
 
     public static string Fingerprint(EconomyConfig config) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Options))));
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Context.EconomyConfig))));
 
     public static SimulationState LoadState(string path) =>
-        JsonSerializer.Deserialize<SimulationState>(File.ReadAllText(path), Options)
+        JsonSerializer.Deserialize(File.ReadAllText(path), Context.SimulationState)
         ?? throw new InvalidDataException("State is empty.");
 
     public static void SaveState(string path, SimulationState state)
@@ -134,7 +135,7 @@ public static class EconomyJson
         var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
         Directory.CreateDirectory(directory);
         var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(state, Options));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(state, Context.SimulationState));
         File.Move(temporary, path, true);
     }
 }

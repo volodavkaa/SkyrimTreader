@@ -13,12 +13,23 @@ if (args.Length == 3 && args[0] == "--find-locations")
     return 0;
 }
 
+if (args.Length == 3 && args[0] == "--find-globals")
+{
+    using var globalMod = SkyrimMod.CreateFromBinaryOverlay(Path.GetFullPath(args[1]), SkyrimRelease.SkyrimSE);
+    foreach (var global in globalMod.Globals
+                 .Where(x => x.EditorID?.Contains(args[2], StringComparison.OrdinalIgnoreCase) == true)
+                 .OrderBy(x => x.EditorID, StringComparer.OrdinalIgnoreCase))
+        Console.WriteLine($"{global.FormKey} {global.EditorID}");
+    return 0;
+}
+
 if ((args.Length != 4 || args[0] != "--load-order") &&
     (args.Length != 5 || args[0] != "--mo2-profile"))
 {
     Console.Error.WriteLine("Usage: SkyrimTreader.Catalog --load-order <Data folder> <plugins list> <output.json>");
     Console.Error.WriteLine("   or: SkyrimTreader.Catalog --mo2-profile <Data folder> <MO2 profile folder> <item-rules.json> <output.json>");
     Console.Error.WriteLine("   or: SkyrimTreader.Catalog --find-locations <plugin.esm> <EditorID fragment>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Catalog --find-globals <plugin.esm> <EditorID fragment>");
     return 2;
 }
 

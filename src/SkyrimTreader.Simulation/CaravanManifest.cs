@@ -41,7 +41,7 @@ public sealed class CaravanManifest
         var absolutePath = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
         var temporaryPath = absolutePath + ".tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, EconomyJson.Options));
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, EconomyJson.Context.CaravanManifest));
         File.Move(temporaryPath, absolutePath, true);
     }
 }

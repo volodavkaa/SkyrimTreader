@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 if (args.Length > 0 && args[0] == "quote") return Quote(args);
 if (args.Length > 0 && args[0] == "export-prices") return ExportPrices(args);
 if (args.Length > 0 && args[0] == "verify-prices") return VerifyPrices(args);
+if (args.Length > 0 && args[0] == "export-papyrus-bridge") return SnapshotPapyrusBridge.Export(args);
 if (args.Length > 0 && args[0] == "export-caravans") return ExportCaravans(args);
 if (args.Length > 0 && args[0] is "trade" or "caravan-loss" or "caravan-arrival") return ApplyEvent(args);
 
@@ -14,6 +15,7 @@ if (args.Length < 2 || !int.TryParse(args[1], out var days) || days < 0)
     Console.Error.WriteLine("   or: SkyrimTreader.Cli quote <config.json> <catalog.json> <region> <FormKey> <days>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli export-prices <config.json> <catalog.json> <days> <output.json> [state.json]");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli verify-prices <config.json> <catalog.json> <snapshot.json>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Cli export-papyrus-bridge <config.json> <catalog.json> <snapshot.json> <STR_SnapshotPriceBridge.psc>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli export-caravans <config.json> <state.json> <output.json>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli trade <config.json> <catalog.json> <state.json> <sequence> <region> <FormKey> <netItemCount>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli caravan-loss <config.json> <state.json> <sequence> <shipmentId> <lostUnits>");
