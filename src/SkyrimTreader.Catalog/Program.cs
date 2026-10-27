@@ -23,6 +23,19 @@ if (args.Length == 3 && args[0] == "--find-globals")
     return 0;
 }
 
+if (args.Length == 3 && args[0] == "--inspect-ingestibles")
+{
+    using var ingestibleMod = SkyrimMod.CreateFromBinaryOverlay(Path.GetFullPath(args[1]), SkyrimRelease.SkyrimSE);
+    foreach (var item in ingestibleMod.Ingestibles
+                 .Where(x => x.EditorID?.Contains(args[2], StringComparison.OrdinalIgnoreCase) == true)
+                 .OrderBy(x => x.EditorID, StringComparer.OrdinalIgnoreCase))
+    {
+        var flags = item.Flags;
+        Console.WriteLine($"{item.FormKey} {item.EditorID} value={item.Value} flags={flags} flagType={flags.GetType().FullName}");
+    }
+    return 0;
+}
+
 if ((args.Length != 4 || args[0] != "--load-order") &&
     (args.Length != 5 || args[0] != "--mo2-profile"))
 {
@@ -30,6 +43,7 @@ if ((args.Length != 4 || args[0] != "--load-order") &&
     Console.Error.WriteLine("   or: SkyrimTreader.Catalog --mo2-profile <Data folder> <MO2 profile folder> <item-rules.json> <output.json>");
     Console.Error.WriteLine("   or: SkyrimTreader.Catalog --find-locations <plugin.esm> <EditorID fragment>");
     Console.Error.WriteLine("   or: SkyrimTreader.Catalog --find-globals <plugin.esm> <EditorID fragment>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Catalog --inspect-ingestibles <plugin.esm> <EditorID fragment>");
     return 2;
 }
 
@@ -42,7 +56,8 @@ try
     var rulesPath = mo2Profile ? Path.GetFullPath(args[3]) : Path.Combine(Path.GetDirectoryName(inputPath)!, "item-rules.json");
     var rules = JsonSerializer.Deserialize<Dictionary<string, CommodityRule>>(File.ReadAllText(rulesPath), JsonOptions())
         ?? throw new InvalidDataException("Item rules are empty.");
-    if (rules.Any(x => string.IsNullOrWhiteSpace(x.Value.Commodity) || x.Value.Units <= 0))
+    if (rules.Any(x => x.Value.Commodity is null ? x.Value.Units != 0 :
+            string.IsNullOrWhiteSpace(x.Value.Commodity) || x.Value.Units <= 0))
         throw new InvalidDataException("Item rules contain an invalid commodity or unit count.");
     List<PluginSource> sources;
     if (mo2Profile)
@@ -68,7 +83,17 @@ try
         foreach (var item in mod.MiscItems)
             Add(winners, item.FormKey.ToString(), item.EditorID, "MISC", item.Value, plugin, item.IsDeleted);
         foreach (var item in mod.Ingestibles)
-            Add(winners, item.FormKey.ToString(), item.EditorID, "ALCH", item.Value, plugin, item.IsDeleted);
+        {
+            var key = item.FormKey.ToString();
+            // The runtime only reads the manual ALCH value. Keep the inferred
+            // set to ordinary vanilla food; explicit FormKey rules win below.
+            var ordinaryFood = key.EndsWith(":Skyrim.esm", StringComparison.OrdinalIgnoreCase) &&
+                item.EditorID?.StartsWith("Food", StringComparison.OrdinalIgnoreCase) == true &&
+                item.Value > 0 && item.Flags.HasFlag(Ingestible.Flag.FoodItem) &&
+                item.Flags.HasFlag(Ingestible.Flag.NoAutoCalc);
+            Add(winners, key, item.EditorID, "ALCH", item.Value, plugin, item.IsDeleted,
+                ordinaryFood ? new CommodityRule("food", 1) : null);
+        }
         foreach (var item in mod.Weapons)
             Add(winners, item.FormKey.ToString(), item.EditorID, "WEAP", item.BasicStats?.Value ?? 0, plugin, item.IsDeleted);
         foreach (var item in mod.Armors)
@@ -95,10 +120,10 @@ catch (Exception ex) when (ex is IOException or InvalidDataException or Argument
 }
 
 static void Add(Dictionary<string, CatalogRecord> winners, string key, string? editorId, string type,
-    uint value, string plugin, bool deleted)
+    uint value, string plugin, bool deleted, CommodityRule? inferred = null)
 {
     if (deleted) winners.Remove(key);
-    else winners[key] = new CatalogRecord(key, editorId, type, value, plugin, null, 0);
+    else winners[key] = new CatalogRecord(key, editorId, type, value, plugin, inferred?.Commodity, inferred?.Units ?? 0);
 }
 
 static JsonSerializerOptions JsonOptions() => new()
@@ -107,7 +132,7 @@ static JsonSerializerOptions JsonOptions() => new()
     WriteIndented = true
 };
 
-internal sealed record CommodityRule(string Commodity, int Units);
+internal sealed record CommodityRule(string? Commodity, int Units);
 internal sealed record CatalogRecord(string FormKey, string? EditorId, string Type, uint BaseValue,
     string WinningPlugin, string? Commodity, int Units);
 internal sealed record CatalogOutput(int SchemaVersion, List<string> LoadOrder, List<CatalogRecord> Records);

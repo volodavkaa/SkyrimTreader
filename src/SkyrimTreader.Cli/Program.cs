@@ -1,12 +1,16 @@
 using SkyrimTreader.Simulation;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 if (args.Length > 0 && args[0] == "quote") return Quote(args);
 if (args.Length > 0 && args[0] == "export-prices") return ExportPrices(args);
 if (args.Length > 0 && args[0] == "verify-prices") return VerifyPrices(args);
 if (args.Length > 0 && args[0] == "export-papyrus-bridge") return SnapshotPapyrusBridge.Export(args);
 if (args.Length > 0 && args[0] == "export-caravans") return ExportCaravans(args);
+if (args.Length > 0 && args[0] == "export-status") return ExportStatus(args);
+if (args.Length > 0 && args[0] == "visible-plan") return VisiblePlan(args);
+if (args.Length > 0 && args[0] == "physical-plan") return PhysicalPlan(args);
 if (args.Length > 0 && args[0] is "trade" or "caravan-loss" or "caravan-arrival") return ApplyEvent(args);
 
 if (args.Length < 2 || !int.TryParse(args[1], out var days) || days < 0)
@@ -17,6 +21,9 @@ if (args.Length < 2 || !int.TryParse(args[1], out var days) || days < 0)
     Console.Error.WriteLine("   or: SkyrimTreader.Cli verify-prices <config.json> <catalog.json> <snapshot.json>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli export-papyrus-bridge <config.json> <catalog.json> <snapshot.json> <STR_SnapshotPriceBridge.psc>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli export-caravans <config.json> <state.json> <output.json>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Cli export-status <config.json> <state.json> <output.json>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Cli visible-plan <config.json> <state.json> <region>");
+    Console.Error.WriteLine("   or: SkyrimTreader.Cli physical-plan <config.json> <catalog.json> <routes.json> <state.json> <region>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli trade <config.json> <catalog.json> <state.json> <sequence> <region> <FormKey> <netItemCount>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli caravan-loss <config.json> <state.json> <sequence> <shipmentId> <lostUnits>");
     Console.Error.WriteLine("   or: SkyrimTreader.Cli caravan-arrival <config.json> <state.json> <sequence> <shipmentId>");
@@ -199,6 +206,76 @@ static int ExportCaravans(string[] arguments)
         return 0;
     }
     catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidDataException or ArgumentException or OverflowException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static int ExportStatus(string[] arguments)
+{
+    if (arguments.Length != 4)
+    {
+        Console.Error.WriteLine("Usage: SkyrimTreader.Cli export-status <config.json> <state.json> <output.json>");
+        return 2;
+    }
+    try
+    {
+        var config = EconomyJson.LoadConfig(arguments[1]);
+        var engine = new EconomyEngine(config, EconomyJson.LoadState(arguments[2]));
+        var status = EconomyStatus.Create(config, engine);
+        status.Save(arguments[3]);
+        Console.WriteLine($"Day {status.Day}: exported {status.Regions.Count} regions, " +
+            $"{status.Caravans.Count} active caravans and {status.RecentEvents.Count} events to {arguments[3]}.");
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidDataException or ArgumentException or OverflowException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static int VisiblePlan(string[] arguments)
+{
+    if (arguments.Length != 4)
+    {
+        Console.Error.WriteLine("Usage: SkyrimTreader.Cli visible-plan <config.json> <state.json> <region>");
+        return 2;
+    }
+    try
+    {
+        var config = EconomyJson.LoadConfig(arguments[1]);
+        var engine = new EconomyEngine(config, EconomyJson.LoadState(arguments[2]));
+        var plan = engine.PlanVisibleCaravan(arguments[3]);
+        Console.WriteLine(plan is null ? "null" : JsonSerializer.Serialize(plan, EconomyJson.Context.VisibleCaravanPlan));
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or ArgumentException or OverflowException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static int PhysicalPlan(string[] arguments)
+{
+    if (arguments.Length != 6)
+    {
+        Console.Error.WriteLine("Usage: SkyrimTreader.Cli physical-plan <config.json> <catalog.json> <routes.json> <state.json> <region>");
+        return 2;
+    }
+    try
+    {
+        var config = EconomyJson.LoadConfig(arguments[1]);
+        var catalog = ItemCatalog.Load(arguments[2], config);
+        var roads = PhysicalCaravanRoutes.Load(arguments[3], config, catalog);
+        var engine = new EconomyEngine(config, EconomyJson.LoadState(arguments[4]));
+        var plan = roads.Plan(engine, arguments[5]);
+        Console.WriteLine(plan is null ? "null" : JsonSerializer.Serialize(plan, EconomyJson.Context.PhysicalCaravanPlan));
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or ArgumentException or OverflowException)
     {
         Console.Error.WriteLine(ex.Message);
         return 1;

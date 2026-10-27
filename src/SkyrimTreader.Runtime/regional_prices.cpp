@@ -30,6 +30,7 @@ namespace {
 struct Item
 {
     TESForm* form = nullptr;
+    UInt32 formId = 0;
     std::string key;
     int kind = 0;
     int original = 0;
@@ -96,7 +97,7 @@ void WriteValue(const Item& item, int value)
     }
 }
 
-const char* CurrentRegion()
+const char* FindCurrentRegion()
 {
     if (!GameBase()) return nullptr;
     // g_thePlayer in SKSE 2.3.1 GameAPI.cpp. The city hierarchy is in GameForms.h.
@@ -127,7 +128,7 @@ std::string Initialize()
     for (const auto& entry : catalog) {
         UInt32 formId = 0;
         if (!ParseVanillaFormKey(entry.formKey, formId)) continue;
-        Item item{ LookupForm(formId), entry.formKey, entry.kind, entry.baseValue, entry.baseValue, false };
+        Item item{ LookupForm(formId), formId, entry.formKey, entry.kind, entry.baseValue, entry.baseValue, false };
         const int live = ReadValue(item);
         item.enabled = live == item.original;
         if (item.enabled) ++enabled;
@@ -139,7 +140,7 @@ std::string Initialize()
 std::string Update()
 {
     if (!NativeEconomy::Ready()) return {};
-    const char* region = CurrentRegion();
+    const char* region = FindCurrentRegion();
     std::string changes;
     for (auto& item : items) {
         if (!item.enabled) continue;
@@ -171,5 +172,12 @@ void Restore()
             WriteValue(item, item.original);
         item.applied = item.original;
     }
+}
+const char* CurrentRegion() { return FindCurrentRegion(); }
+const char* TrackedFormKey(UInt32 formId)
+{
+    for (const auto& item : items)
+        if (item.formId == formId && item.enabled) return item.key.c_str();
+    return nullptr;
 }
 }

@@ -18,6 +18,9 @@ public static unsafe class Exports
     private static CatalogItem[] _trackedItems = [];
     private static EconomyEngine? _engine;
     private static string _catalogFingerprint = "";
+    private static string _compatiblePreviousCatalogFingerprint = "";
+    private static RuntimeSettings _settings = new();
+    private static PhysicalCaravanRoutes _physicalRoutes = new();
     private static int? _worldDayOrigin;
     private static string _lastError = "";
 
@@ -31,10 +34,29 @@ public static unsafe class Exports
                 var config = EconomyJson.LoadConfig(ReadRequired(configPath));
                 var catalogFile = ReadRequired(catalogPath);
                 var catalog = ItemCatalog.Load(catalogFile, config);
+                var settingsFile = Path.Combine(Path.GetDirectoryName(catalogFile)!, "STRSettings.json");
+                var settings = File.Exists(settingsFile)
+                    ? JsonSerializer.Deserialize(File.ReadAllText(settingsFile), JsonContext.RuntimeSettings)
+                        ?? throw new InvalidDataException("Runtime settings are empty.")
+                    : new RuntimeSettings();
+                settings.Validate();
+                var routeFile = Path.Combine(Path.GetDirectoryName(catalogFile)!, "STRVisibleRoutes.json");
+                var physicalRoutes = File.Exists(routeFile)
+                    ? PhysicalCaravanRoutes.Load(routeFile, config, catalog)
+                    : new PhysicalCaravanRoutes();
                 var catalogFingerprint = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(catalogFile)));
+                var previousCatalogFile = Path.Combine(Path.GetDirectoryName(catalogFile)!, "STRPreviousCatalog.json");
+                var previousCatalogFingerprint = "";
+                if (File.Exists(previousCatalogFile))
+                {
+                    var previous = ItemCatalog.Load(previousCatalogFile, config);
+                    if (!CanMigrateCatalog(previous, catalog))
+                        throw new InvalidDataException("Previous catalog changes a previously tracked item.");
+                    previousCatalogFingerprint = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(previousCatalogFile)));
+                }
                 var stateFile = ReadOptional(statePath);
                 var envelope = stateFile.Length > 0 && File.Exists(stateFile)
-                    ? ReadEnvelope(File.ReadAllBytes(stateFile), catalogFingerprint)
+                    ? ReadEnvelope(File.ReadAllBytes(stateFile), catalogFingerprint, previousCatalogFingerprint)
                     : null;
                 var engine = new EconomyEngine(config, envelope?.State, seed: 42);
                 _config = config;
@@ -43,6 +65,9 @@ public static unsafe class Exports
                     .OrderBy(item => item.FormKey, StringComparer.OrdinalIgnoreCase).ToArray();
                 _engine = engine;
                 _catalogFingerprint = catalogFingerprint;
+                _settings = settings;
+                _physicalRoutes = physicalRoutes;
+                _compatiblePreviousCatalogFingerprint = previousCatalogFingerprint;
                 _worldDayOrigin = envelope?.WorldDayOrigin;
                 _lastError = "";
                 return engine.State.Day;
@@ -54,6 +79,9 @@ public static unsafe class Exports
                 _trackedItems = [];
                 _engine = null;
                 _catalogFingerprint = "";
+                _compatiblePreviousCatalogFingerprint = "";
+                _settings = new RuntimeSettings();
+                _physicalRoutes = new PhysicalCaravanRoutes();
                 _worldDayOrigin = null;
                 return Fail(ex);
             }
@@ -120,7 +148,9 @@ public static unsafe class Exports
                 if (!engine.State.Regions.ContainsKey(regionId))
                     throw new ArgumentException("Unknown region.", nameof(region));
                 var item = _catalog!.Find(itemId) ?? throw new ArgumentException("Unknown form key.", nameof(formKey));
-                var value = engine.RegionalItemValue(regionId, item);
+                var simulated = engine.RegionalItemValue(regionId, item);
+                var value = Math.Clamp(Math.Round(item.BaseValue +
+                    (simulated - (double)item.BaseValue) * _settings.PriceIntensity), 1, int.MaxValue);
                 _lastError = "";
                 return checked((int)value);
             }
@@ -211,6 +241,31 @@ public static unsafe class Exports
         }
     }
 
+    // A game-side container event is already ordered when it reaches this call.
+    // Allocate and apply its sequence under the same lock so save/load and event
+    // callbacks cannot create gaps or apply a transaction twice.
+    [UnmanagedCallersOnly(EntryPoint = "STR_ApplyTradeAuto")]
+    public static long ApplyTradeAuto(byte* region, byte* formKey, int netSoldToMerchant)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var engine = RequireEngine();
+                var regionId = ReadRequired(region);
+                var itemId = ReadRequired(formKey);
+                if (!engine.State.Regions.ContainsKey(regionId))
+                    throw new ArgumentException("Unknown region.", nameof(region));
+                var item = _catalog!.Find(itemId) ?? throw new ArgumentException("Unknown form key.", nameof(formKey));
+                var sequence = checked(engine.State.LastTradeSequence + 1);
+                engine.ApplyTradeItem(sequence, regionId, item, netSoldToMerchant);
+                _lastError = "";
+                return sequence;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "STR_ReportCaravanLoss")]
     public static int ReportCaravanLoss(long sequence, long shipmentId, int lostQuantity)
     {
@@ -255,6 +310,180 @@ public static unsafe class Exports
         }
     }
 
+    [UnmanagedCallersOnly(EntryPoint = "STR_CopyStatus")]
+    public static int CopyStatus(byte* destination, int capacity)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var status = EconomyStatus.Create(_config ?? throw new InvalidOperationException("Initialize first."),
+                    RequireEngine());
+                status.PriceIntensity = _settings.PriceIntensity;
+                status.VisibleCaravansEnabled = _settings.VisibleCaravansEnabled;
+                return CopyUtf8(JsonSerializer.Serialize(status, EconomyJson.Context.EconomyStatus), destination, capacity);
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_CopyVisibleCaravanPlan")]
+    public static int CopyVisibleCaravanPlan(byte* region, byte* destination, int capacity)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var plan = RequireEngine().PlanVisibleCaravan(ReadRequired(region), _settings.VisibleCaravansEnabled);
+                return CopyUtf8(plan is null ? "null" : JsonSerializer.Serialize(plan, EconomyJson.Context.VisibleCaravanPlan),
+                    destination, capacity);
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_CopyPhysicalCaravanPlan")]
+    public static int CopyPhysicalCaravanPlan(byte* region, byte* destination, int capacity)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var plan = _physicalRoutes.Plan(RequireEngine(), ReadRequired(region),
+                    _settings.VisibleCaravansEnabled);
+                return CopyUtf8(plan is null ? "null" :
+                    JsonSerializer.Serialize(plan, EconomyJson.Context.PhysicalCaravanPlan), destination, capacity);
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_ConfirmPhysicalCaravanSpawn")]
+    public static int ConfirmPhysicalCaravanSpawn(long shipmentId, byte* region, uint leaderFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                if (!_settings.VisibleCaravansEnabled)
+                    throw new InvalidOperationException("Visible caravans are disabled.");
+                var applied = RequireEngine().ConfirmVisibleCaravanSpawn(shipmentId, ReadRequired(region),
+                    leaderFormId, _physicalRoutes.EnabledRouteIds(), _physicalRoutes.SupportedCommodities());
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_ConfirmPhysicalCaravanGroup")]
+    public static int ConfirmPhysicalCaravanGroup(long shipmentId, byte* region, uint leaderFormId,
+        uint packFormId, uint guardFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                if (!_settings.VisibleCaravansEnabled)
+                    throw new InvalidOperationException("Visible caravans are disabled.");
+                var applied = RequireEngine().ConfirmPhysicalCaravanGroup(shipmentId, ReadRequired(region),
+                    leaderFormId, packFormId, guardFormId, _physicalRoutes.EnabledRouteIds(),
+                    _physicalRoutes.SupportedCommodities());
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_UpdateVisibleWaypoint")]
+    public static int UpdateVisibleWaypoint(long shipmentId, uint leaderFormId, int waypointIndex, int anchorCount)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var applied = RequireEngine().UpdateVisibleWaypoint(shipmentId, leaderFormId,
+                    waypointIndex, anchorCount);
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_GetPhysicalCaravanGroup")]
+    public static int GetPhysicalCaravanGroup(long* shipmentId, uint* leaderFormId,
+        uint* packFormId, uint* guardFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                if (shipmentId is null || leaderFormId is null || packFormId is null || guardFormId is null)
+                    throw new ArgumentNullException(nameof(shipmentId));
+                var binding = RequireEngine().State.VisibleCaravan;
+                if (binding is null || binding.PackFormId == 0 || binding.GuardFormId == 0) return 0;
+                *shipmentId = binding.ShipmentId;
+                *leaderFormId = binding.LeaderFormId;
+                *packFormId = binding.PackFormId;
+                *guardFormId = binding.GuardFormId;
+                _lastError = "";
+                return 1;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_RebindPhysicalCaravanGroup")]
+    public static int RebindPhysicalCaravanGroup(long shipmentId, uint oldLeaderFormId,
+        uint leaderFormId, uint packFormId, uint guardFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var applied = RequireEngine().RebindPhysicalCaravanGroup(shipmentId,
+                    oldLeaderFormId, leaderFormId, packFormId, guardFormId);
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_ConfirmVisibleCaravanSpawn")]
+    public static int ConfirmVisibleCaravanSpawn(long shipmentId, byte* region, uint leaderFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                if (!_settings.VisibleCaravansEnabled)
+                    throw new InvalidOperationException("Visible caravans are disabled.");
+                var applied = RequireEngine().ConfirmVisibleCaravanSpawn(shipmentId, ReadRequired(region), leaderFormId);
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "STR_ReleaseVisibleCaravan")]
+    public static int ReleaseVisibleCaravan(long shipmentId, uint leaderFormId)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var applied = RequireEngine().ReleaseVisibleCaravan(shipmentId, leaderFormId);
+                _lastError = "";
+                return applied ? 1 : 0;
+            }
+            catch (Exception ex) { return Fail(ex); }
+        }
+    }
+
     // A zero-capacity call returns the required UTF-8 byte count. The caller owns
     // the buffer and should persist it in the matching SKSE co-save record.
     [UnmanagedCallersOnly(EntryPoint = "STR_CopyState")]
@@ -287,7 +516,8 @@ public static unsafe class Exports
                 if (stateJson == null || length <= 0 || length > 16 * 1024 * 1024)
                     throw new ArgumentOutOfRangeException(nameof(length));
                 if (_config is null || _catalog is null) throw new InvalidOperationException("Initialize first.");
-                var envelope = ReadEnvelope(new ReadOnlySpan<byte>(stateJson, length), _catalogFingerprint);
+                var envelope = ReadEnvelope(new ReadOnlySpan<byte>(stateJson, length), _catalogFingerprint,
+                    _compatiblePreviousCatalogFingerprint);
                 _engine = new EconomyEngine(_config, envelope.State);
                 _worldDayOrigin = envelope.WorldDayOrigin;
                 _lastError = "";
@@ -329,11 +559,29 @@ public static unsafe class Exports
         _lastError = "";
         return bytes.Length;
     }
-    private static NativeStateEnvelope ReadEnvelope(ReadOnlySpan<byte> bytes, string catalogFingerprint)
+    private static bool CanMigrateCatalog(ItemCatalog previous, ItemCatalog current)
+    {
+        foreach (var oldItem in previous.Records.Where(item => item.Commodity is not null))
+        {
+            var newItem = current.Find(oldItem.FormKey);
+            if (newItem is null ||
+                !string.Equals(oldItem.Commodity, newItem.Commodity, StringComparison.OrdinalIgnoreCase) ||
+                oldItem.Units != newItem.Units || oldItem.BaseValue != newItem.BaseValue ||
+                !string.Equals(oldItem.Type, newItem.Type, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(oldItem.WinningPlugin, newItem.WinningPlugin, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        return true;
+    }
+    private static NativeStateEnvelope ReadEnvelope(ReadOnlySpan<byte> bytes, string catalogFingerprint,
+        string compatiblePreviousFingerprint)
     {
         var envelope = JsonSerializer.Deserialize(bytes, JsonContext.NativeStateEnvelope)
             ?? throw new InvalidDataException("State is empty.");
-        if (envelope.SchemaVersion != 1 || !string.Equals(envelope.CatalogFingerprint, catalogFingerprint, StringComparison.OrdinalIgnoreCase))
+        if (envelope.SchemaVersion != 1 ||
+            (!string.Equals(envelope.CatalogFingerprint, catalogFingerprint, StringComparison.OrdinalIgnoreCase) &&
+             (compatiblePreviousFingerprint.Length == 0 ||
+              !string.Equals(envelope.CatalogFingerprint, compatiblePreviousFingerprint, StringComparison.OrdinalIgnoreCase))))
             throw new InvalidDataException("State catalog differs from current catalog.");
         if (envelope.State is null) throw new InvalidDataException("State body is empty.");
         return envelope;

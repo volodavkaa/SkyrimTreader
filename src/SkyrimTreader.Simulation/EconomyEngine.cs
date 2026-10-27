@@ -125,6 +125,13 @@ public sealed class EconomyEngine
             State.LastCaravanEventSequence = sequence;
             return false;
         }
+        if ((State.RouteBlockedUntilDay.TryGetValue(shipment.RouteId, out var blockedUntil) &&
+             State.Day <= blockedUntil) ||
+            (shipment.Status == ShipmentStatus.Delayed && State.Day < shipment.ArrivalDay))
+        {
+            State.LastCaravanEventSequence = sequence;
+            return false;
+        }
         var destination = State.Regions[shipment.To][shipment.Commodity];
         destination.Stock = checked(destination.Stock + shipment.RemainingQuantity);
         shipment.EventResolved = true;
@@ -134,6 +141,127 @@ public sealed class EconomyEngine
         TrimJournal();
         return true;
     }
+
+    public VisibleCaravanPlan? PlanVisibleCaravan(string playerRegion, bool visibleEnabled = true,
+        IReadOnlySet<string>? permittedRoutes = null, IReadOnlySet<string>? permittedCommodities = null)
+    {
+        if (!_config.Regions.ContainsKey(playerRegion)) throw new ArgumentException("Unknown region.", nameof(playerRegion));
+        if (State.VisibleCaravan is { } binding)
+        {
+            var shipment = State.Shipments.Single(x => x.Id == binding.ShipmentId);
+            return ToVisiblePlan(shipment, binding.Region, binding.LeaderFormId,
+                visibleEnabled && IsActive(shipment) && (shipment.From == playerRegion || shipment.To == playerRegion) &&
+                (permittedRoutes is null || permittedRoutes.Contains(shipment.RouteId)) &&
+                (permittedCommodities is null || permittedCommodities.Contains(shipment.Commodity))
+                    ? VisibleCaravanAction.Keep : VisibleCaravanAction.Retire, binding);
+        }
+        if (!visibleEnabled) return null;
+        var candidate = State.Shipments
+            .Where(x => IsActive(x) && (x.From == playerRegion || x.To == playerRegion) &&
+                (permittedRoutes is null || permittedRoutes.Contains(x.RouteId)) &&
+                (permittedCommodities is null || permittedCommodities.Contains(x.Commodity)) &&
+                !State.RetiredVisibleShipments.Contains(x.Id))
+            .OrderBy(x => x.Id).FirstOrDefault();
+        return candidate is null ? null : ToVisiblePlan(candidate, playerRegion, 0, VisibleCaravanAction.Spawn);
+    }
+
+    public bool ConfirmVisibleCaravanSpawn(long shipmentId, string region, uint leaderFormId,
+        IReadOnlySet<string>? permittedRoutes = null, IReadOnlySet<string>? permittedCommodities = null)
+    {
+        if (leaderFormId == 0) throw new ArgumentOutOfRangeException(nameof(leaderFormId));
+        if (State.VisibleCaravan is { } binding)
+        {
+            if (binding.ShipmentId == shipmentId && binding.Region == region && binding.LeaderFormId == leaderFormId)
+                return false;
+            throw new InvalidDataException("Another visible caravan is already bound.");
+        }
+        var plan = PlanVisibleCaravan(region, permittedRoutes: permittedRoutes,
+            permittedCommodities: permittedCommodities);
+        if (plan is null || plan.Action != VisibleCaravanAction.Spawn || plan.ShipmentId != shipmentId)
+            throw new InvalidDataException("Shipment is not the current visible caravan candidate.");
+        State.VisibleCaravan = new VisibleCaravanBinding
+        {
+            ShipmentId = shipmentId, Region = region, LeaderFormId = leaderFormId, SpawnDay = State.Day
+        };
+        return true;
+    }
+
+    public bool ReleaseVisibleCaravan(long shipmentId, uint leaderFormId)
+    {
+        if (State.VisibleCaravan is null)
+        {
+            if (State.RetiredVisibleShipments.Contains(shipmentId)) return false;
+            throw new InvalidDataException("No visible caravan is bound.");
+        }
+        if (State.VisibleCaravan.ShipmentId != shipmentId || State.VisibleCaravan.LeaderFormId != leaderFormId)
+            throw new InvalidDataException("Visible caravan binding does not match.");
+        State.VisibleCaravan = null;
+        State.RetiredVisibleShipments.Add(shipmentId);
+        return true;
+    }
+
+    public bool ConfirmPhysicalCaravanGroup(long shipmentId, string region, uint leaderFormId,
+        uint packFormId, uint guardFormId, IReadOnlySet<string> permittedRoutes,
+        IReadOnlySet<string> permittedCommodities)
+    {
+        if (leaderFormId == 0 || packFormId == 0 || guardFormId == 0 ||
+            leaderFormId == packFormId || leaderFormId == guardFormId || packFormId == guardFormId)
+            throw new ArgumentException("A physical caravan needs three distinct actor references.");
+        var applied = ConfirmVisibleCaravanSpawn(shipmentId, region, leaderFormId,
+            permittedRoutes, permittedCommodities);
+        var binding = State.VisibleCaravan!;
+        if (!applied)
+        {
+            if (binding.PackFormId == packFormId && binding.GuardFormId == guardFormId) return false;
+            throw new InvalidDataException("Existing group actors do not match.");
+        }
+        binding.PackFormId = packFormId;
+        binding.GuardFormId = guardFormId;
+        return true;
+    }
+
+    public bool UpdateVisibleWaypoint(long shipmentId, uint leaderFormId, int waypointIndex, int anchorCount)
+    {
+        if (anchorCount < 2 || waypointIndex < 0 || waypointIndex >= anchorCount)
+            throw new ArgumentOutOfRangeException(nameof(waypointIndex));
+        var binding = State.VisibleCaravan;
+        if (binding is null || binding.ShipmentId != shipmentId || binding.LeaderFormId != leaderFormId ||
+            binding.PackFormId == 0 || binding.GuardFormId == 0)
+            throw new InvalidDataException("Physical group binding does not match.");
+        if (waypointIndex < binding.WaypointIndex)
+            throw new InvalidDataException("Visible caravan waypoint cannot move backwards.");
+        if (waypointIndex == binding.WaypointIndex) return false;
+        binding.WaypointIndex = waypointIndex;
+        return true;
+    }
+
+    public bool RebindPhysicalCaravanGroup(long shipmentId, uint oldLeaderFormId,
+        uint leaderFormId, uint packFormId, uint guardFormId)
+    {
+        var binding = State.VisibleCaravan;
+        if (binding is null || binding.ShipmentId != shipmentId || binding.LeaderFormId != oldLeaderFormId ||
+            binding.PackFormId == 0 || binding.GuardFormId == 0)
+            throw new InvalidDataException("Physical group binding does not match.");
+        if (leaderFormId == 0 || packFormId == 0 || guardFormId == 0 ||
+            leaderFormId == packFormId || leaderFormId == guardFormId || packFormId == guardFormId)
+            throw new ArgumentException("Resolved actors must have distinct FormIDs.");
+        if (binding.LeaderFormId == leaderFormId && binding.PackFormId == packFormId &&
+            binding.GuardFormId == guardFormId) return false;
+        binding.LeaderFormId = leaderFormId;
+        binding.PackFormId = packFormId;
+        binding.GuardFormId = guardFormId;
+        return true;
+    }
+
+    private static VisibleCaravanPlan ToVisiblePlan(Shipment shipment, string region, uint leaderFormId,
+        VisibleCaravanAction action, VisibleCaravanBinding? binding = null) => new()
+    {
+        ShipmentId = shipment.Id, RouteId = shipment.RouteId, From = shipment.From, To = shipment.To,
+        Commodity = shipment.Commodity, RemainingQuantity = shipment.RemainingQuantity,
+        ArrivalDay = shipment.ArrivalDay, Region = region, LeaderFormId = leaderFormId,
+        PackFormId = binding?.PackFormId ?? 0, GuardFormId = binding?.GuardFormId ?? 0,
+        WaypointIndex = binding?.WaypointIndex ?? 0, Action = action
+    };
 
     private bool BeginCaravanEvent(long sequence)
     {
@@ -361,6 +489,20 @@ public sealed class EconomyEngine
         foreach (var (routeId, untilDay) in State.RouteBlockedUntilDay)
             if (!routeById.ContainsKey(routeId) || untilDay < 0)
                 throw new InvalidDataException($"Invalid route block {routeId} in state.");
+
+        if (State.RetiredVisibleShipments is null ||
+            State.RetiredVisibleShipments.Any(id => !shipmentIds.Contains(id)))
+            throw new InvalidDataException("Invalid retired visible caravan in state.");
+        if (State.VisibleCaravan is { } binding &&
+            (!shipmentIds.Contains(binding.ShipmentId) || State.RetiredVisibleShipments.Contains(binding.ShipmentId) ||
+             !_config.Regions.ContainsKey(binding.Region) || binding.LeaderFormId == 0 ||
+             binding.SpawnDay < 0 || binding.SpawnDay > State.Day || binding.WaypointIndex < 0 ||
+             (binding.PackFormId == 0) != (binding.GuardFormId == 0) ||
+             (binding.PackFormId != 0 && (binding.PackFormId == binding.LeaderFormId ||
+                binding.GuardFormId == binding.LeaderFormId || binding.PackFormId == binding.GuardFormId)) ||
+             !State.Shipments.Any(x => x.Id == binding.ShipmentId &&
+                 (x.From == binding.Region || x.To == binding.Region))))
+            throw new InvalidDataException("Invalid visible caravan binding in state.");
 
         var initial = _config.Regions.Values.Sum(region => region.Markets.Values.Sum(market => (long)market.InitialStock));
         var expected = checked(initial + State.TotalProduced - State.TotalConsumed - State.TotalLost -

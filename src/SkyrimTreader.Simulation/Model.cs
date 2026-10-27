@@ -72,6 +72,8 @@ public sealed class SimulationState
     public long NextShipmentId { get; set; } = 1;
     public Dictionary<string, Dictionary<string, MarketState>> Regions { get; set; } = new();
     public List<Shipment> Shipments { get; set; } = new();
+    public VisibleCaravanBinding? VisibleCaravan { get; set; }
+    public HashSet<long> RetiredVisibleShipments { get; set; } = new();
     public Dictionary<string, int> RouteBlockedUntilDay { get; set; } = new();
     public HashSet<string> AppliedShocks { get; set; } = new();
     public long LastTradeSequence { get; set; }
@@ -115,7 +117,10 @@ public static class EconomyJson
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter<ShipmentStatus>() }
+        Converters = {
+            new System.Text.Json.Serialization.JsonStringEnumConverter<ShipmentStatus>(),
+            new System.Text.Json.Serialization.JsonStringEnumConverter<VisibleCaravanAction>()
+        }
     };
     public static readonly EconomyJsonContext Context = new(Options);
 

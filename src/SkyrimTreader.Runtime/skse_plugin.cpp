@@ -32,6 +32,9 @@ using SInt64 = std::int64_t;
 #ifdef STR_LIVE_PRICES
 #include "regional_prices.h"
 #endif
+#ifdef STR_TRADE_EVENTS
+#include "trade_events.h"
+#endif
 #if defined(STR_DIAGNOSTIC_FORMS) || defined(STR_NATIVE_ECONOMY)
 #define STATIC_ASSERT(condition) static_assert(condition)
 #define ASSERT(condition) assert(condition)
@@ -58,6 +61,10 @@ int lastLoggedWorldDay = -1;
 const SKSETaskInterface* taskInterface = nullptr;
 std::atomic<bool> tickQueued = false;
 std::jthread tickThread;
+#ifdef STR_LIVE_PRICES
+std::string lastPhysicalPlan;
+std::string lastPhysicalRegion;
+#endif
 #endif
 std::filesystem::path PluginDirectory()
 {
@@ -78,6 +85,29 @@ void Log(const std::string& message)
 }
 
 #ifdef STR_NATIVE_ECONOMY
+void WriteStatus()
+{
+    std::vector<std::byte> bytes;
+    if (!NativeEconomy::CopyStatus(bytes)) {
+        Log("Economy status unavailable: " + NativeEconomy::LastError());
+        return;
+    }
+    const auto folder = PluginDirectory();
+    if (folder.empty()) return;
+    const auto target = folder / L"STRStatus.json";
+    const auto temporary = folder / L"STRStatus.json.tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!output) {
+            Log("Could not write economy status.");
+            return;
+        }
+    }
+    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        Log("Could not replace economy status.");
+}
+
 void TickEconomy()
 {
     if (!gameLoaded || !NativeEconomy::Ready()) return;
@@ -101,7 +131,48 @@ void TickEconomy()
     }
     lastLoggedWorldDay = worldDay;
     Log("World day " + std::to_string(worldDay) + " -> economy day " + std::to_string(economyDay) + ".");
+    WriteStatus();
 }
+
+#ifdef STR_LIVE_PRICES
+void UpdatePhysicalPlan()
+{
+    if (!gameLoaded || !NativeEconomy::Ready()) return;
+    const char* region = RegionalPrices::CurrentRegion();
+    std::vector<std::byte> bytes;
+    if (region && !NativeEconomy::CopyPhysicalCaravanPlan(region, bytes)) {
+        Log("Physical caravan plan unavailable: " + NativeEconomy::LastError());
+        return;
+    }
+    if (!region) {
+        const char empty[] = "null";
+        bytes.assign(reinterpret_cast<const std::byte*>(empty),
+            reinterpret_cast<const std::byte*>(empty) + sizeof(empty) - 1);
+    }
+    std::string content(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const std::string currentRegion = region ? region : "";
+    if (content == lastPhysicalPlan && currentRegion == lastPhysicalRegion) return;
+    const auto folder = PluginDirectory();
+    if (folder.empty()) return;
+    const auto target = folder / L"STRPhysicalPlan.json";
+    const auto temporary = folder / L"STRPhysicalPlan.json.tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output.write(content.data(), static_cast<std::streamsize>(content.size()));
+        if (!output) {
+            Log("Could not write physical caravan plan.");
+            return;
+        }
+    }
+    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        Log("Could not replace physical caravan plan.");
+        return;
+    }
+    lastPhysicalPlan = std::move(content);
+    lastPhysicalRegion = currentRegion;
+    Log("Physical caravan plan refreshed for " + (region ? currentRegion : "outside supported regions") + ".");
+}
+#endif
 
 class EconomyTickTask final : public TaskDelegate
 {
@@ -113,6 +184,7 @@ public:
         if (gameLoaded) {
             const auto changes = RegionalPrices::Update();
             if (!changes.empty()) Log("Regional prices: " + changes);
+            UpdatePhysicalPlan();
         }
 #endif
         tickQueued = false;
@@ -171,8 +243,13 @@ void OnSave(SKSESerializationInterface* serialization)
 
 void OnLoad(SKSESerializationInterface* serialization)
 {
+#ifdef STR_TRADE_EVENTS
+    TradeEvents::ResetSession();
+#endif
 #ifdef STR_LIVE_PRICES
     RegionalPrices::Restore();
+    lastPhysicalPlan.clear();
+    lastPhysicalRegion.clear();
 #endif
     gameLoaded = false;
     lastLoggedWorldDay = -1;
@@ -195,12 +272,36 @@ void OnLoad(SKSESerializationInterface* serialization)
     }
     if (pendingState.empty()) Log("No economy co-save record; starting from initial state.");
     ApplyPendingState();
+    if (NativeEconomy::Ready() && serialization->ResolveFormId) {
+        long long shipmentId = 0;
+        unsigned int leaderId = 0, packId = 0, guardId = 0;
+        const int group = NativeEconomy::GetPhysicalCaravanGroup(shipmentId, leaderId, packId, guardId);
+        if (group == 1) {
+            UInt32 resolvedLeader = 0, resolvedPack = 0, resolvedGuard = 0;
+            if (serialization->ResolveFormId(leaderId, &resolvedLeader) &&
+                serialization->ResolveFormId(packId, &resolvedPack) &&
+                serialization->ResolveFormId(guardId, &resolvedGuard) &&
+                NativeEconomy::RebindPhysicalCaravanGroup(shipmentId, leaderId,
+                    resolvedLeader, resolvedPack, resolvedGuard) >= 0)
+                Log("Physical caravan FormIDs resolved for shipment " + std::to_string(shipmentId) + ".");
+            else {
+                Log("Physical caravan references could not be resolved; shipment remains abstract.");
+                if (NativeEconomy::ReleaseVisibleCaravan(shipmentId, leaderId) < 0)
+                    Log("Physical caravan release failed: " + NativeEconomy::LastError());
+            }
+        } else if (group < 0) Log("Physical caravan state unavailable: " + NativeEconomy::LastError());
+    }
 }
 
 void OnRevert(SKSESerializationInterface*)
 {
+#ifdef STR_TRADE_EVENTS
+    TradeEvents::ResetSession();
+#endif
 #ifdef STR_LIVE_PRICES
     RegionalPrices::Restore();
+    lastPhysicalPlan.clear();
+    lastPhysicalRegion.clear();
 #endif
     gameLoaded = false;
     lastLoggedWorldDay = -1;
@@ -256,6 +357,9 @@ void OnSkseMessage(SKSEMessagingInterface::Message* message)
 #ifdef STR_NATIVE_ECONOMY
     if (message->type == SKSEMessagingInterface::kMessage_PreLoadGame) {
         gameLoaded = false;
+#ifdef STR_TRADE_EVENTS
+        TradeEvents::ResetSession();
+#endif
         return;
     }
     if (message->type == SKSEMessagingInterface::kMessage_PostLoadGame &&
@@ -266,6 +370,7 @@ void OnSkseMessage(SKSEMessagingInterface::Message* message)
 #ifdef STR_LIVE_PRICES
         const auto changes = RegionalPrices::Update();
         if (!changes.empty()) Log("Regional prices: " + changes);
+        UpdatePhysicalPlan();
 #endif
     }
     if (message->type == SKSEMessagingInterface::kMessage_NewGame) {
@@ -292,6 +397,10 @@ void OnSkseMessage(SKSEMessagingInterface::Message* message)
     ApplyPendingState();
 #ifdef STR_LIVE_PRICES
     Log(RegionalPrices::Initialize());
+#endif
+#ifdef STR_TRADE_EVENTS
+    Log(TradeEvents::Register(&gameLoaded, Log, WriteStatus) ? "Barter event sinks registered." :
+        "Barter event sinks unavailable.");
 #endif
     if (NativeEconomy::Ready()) StartEconomyTicker();
 #endif
@@ -344,7 +453,8 @@ __declspec(dllexport) bool SKSEPlugin_Load(const SKSEInterface* skse)
     if (!serialization || serialization->version < SKSESerializationInterface::kVersion ||
         !serialization->SetUniqueID || !serialization->SetSaveCallback ||
         !serialization->SetLoadCallback || !serialization->SetRevertCallback ||
-        !serialization->WriteRecord || !serialization->GetNextRecordInfo || !serialization->ReadRecordData)
+        !serialization->WriteRecord || !serialization->GetNextRecordInfo || !serialization->ReadRecordData ||
+        !serialization->ResolveFormId)
         return false;
     serialization->SetUniqueID(handle, kSerializationId);
     serialization->SetSaveCallback(handle, OnSave);

@@ -16,6 +16,7 @@ using InitializeFn = int(__cdecl*)(const char*, const char*, const char*);
 using AdvanceFn = int(__cdecl*)(int);
 using PriceFn = int(__cdecl*)(const char*, const char*);
 using TradeFn = int(__cdecl*)(long long, const char*, const char*, int);
+using TradeAutoFn = long long(__cdecl*)(const char*, const char*, int);
 using CopyErrorFn = int(__cdecl*)(char*, int);
 using CopyStateFn = int(__cdecl*)(char*, int);
 using LoadStateFn = int(__cdecl*)(const char*, int);
@@ -24,6 +25,13 @@ using CaravanArrivalFn = int(__cdecl*)(long long, long long);
 using TrackedCountFn = int(__cdecl*)();
 using TrackedValueFn = int(__cdecl*)(int);
 using TrackedKeyFn = int(__cdecl*)(int, char*, int);
+using VisiblePlanFn = int(__cdecl*)(const char*, char*, int);
+using VisibleSpawnFn = int(__cdecl*)(long long, const char*, unsigned int);
+using VisibleReleaseFn = int(__cdecl*)(long long, unsigned int);
+using PhysicalGroupFn = int(__cdecl*)(long long, const char*, unsigned int, unsigned int, unsigned int);
+using WaypointFn = int(__cdecl*)(long long, unsigned int, int, int);
+using GetPhysicalGroupFn = int(__cdecl*)(long long*, unsigned int*, unsigned int*, unsigned int*);
+using RebindPhysicalGroupFn = int(__cdecl*)(long long, unsigned int, unsigned int, unsigned int, unsigned int);
 
 HMODULE library = nullptr;  // Native AOT stays loaded until process exit.
 InitializeFn initialize = nullptr;
@@ -31,10 +39,21 @@ AdvanceFn advance = nullptr;
 AdvanceFn syncWorldDay = nullptr;
 PriceFn price = nullptr;
 TradeFn trade = nullptr;
+TradeAutoFn tradeAuto = nullptr;
 CopyErrorFn copyError = nullptr;
 CopyStateFn copyState = nullptr;
 LoadStateFn loadState = nullptr;
 CopyStateFn copyManifest = nullptr;
+CopyStateFn copyStatus = nullptr;
+VisiblePlanFn copyVisiblePlan = nullptr;
+VisiblePlanFn copyPhysicalPlan = nullptr;
+VisibleSpawnFn confirmVisibleSpawn = nullptr;
+VisibleSpawnFn confirmPhysicalSpawn = nullptr;
+PhysicalGroupFn confirmPhysicalGroup = nullptr;
+WaypointFn updateVisibleWaypoint = nullptr;
+GetPhysicalGroupFn getPhysicalGroup = nullptr;
+RebindPhysicalGroupFn rebindPhysicalGroup = nullptr;
+VisibleReleaseFn releaseVisible = nullptr;
 CaravanLossFn caravanLoss = nullptr;
 CaravanArrivalFn caravanArrival = nullptr;
 TrackedCountFn trackedCount = nullptr;
@@ -78,18 +97,32 @@ std::string Initialize(const std::filesystem::path& pluginDirectory)
     syncWorldDay = reinterpret_cast<AdvanceFn>(GetProcAddress(library, "STR_SyncWorldDay"));
     price = reinterpret_cast<PriceFn>(GetProcAddress(library, "STR_GetPrice"));
     trade = reinterpret_cast<TradeFn>(GetProcAddress(library, "STR_ApplyTrade"));
+    tradeAuto = reinterpret_cast<TradeAutoFn>(GetProcAddress(library, "STR_ApplyTradeAuto"));
     copyError = reinterpret_cast<CopyErrorFn>(GetProcAddress(library, "STR_CopyLastError"));
     copyState = reinterpret_cast<CopyStateFn>(GetProcAddress(library, "STR_CopyState"));
     loadState = reinterpret_cast<LoadStateFn>(GetProcAddress(library, "STR_LoadState"));
     copyManifest = reinterpret_cast<CopyStateFn>(GetProcAddress(library, "STR_CopyCaravanManifest"));
+    copyStatus = reinterpret_cast<CopyStateFn>(GetProcAddress(library, "STR_CopyStatus"));
+    copyVisiblePlan = reinterpret_cast<VisiblePlanFn>(GetProcAddress(library, "STR_CopyVisibleCaravanPlan"));
+    copyPhysicalPlan = reinterpret_cast<VisiblePlanFn>(GetProcAddress(library, "STR_CopyPhysicalCaravanPlan"));
+    confirmVisibleSpawn = reinterpret_cast<VisibleSpawnFn>(GetProcAddress(library, "STR_ConfirmVisibleCaravanSpawn"));
+    confirmPhysicalSpawn = reinterpret_cast<VisibleSpawnFn>(GetProcAddress(library, "STR_ConfirmPhysicalCaravanSpawn"));
+    confirmPhysicalGroup = reinterpret_cast<PhysicalGroupFn>(GetProcAddress(library, "STR_ConfirmPhysicalCaravanGroup"));
+    updateVisibleWaypoint = reinterpret_cast<WaypointFn>(GetProcAddress(library, "STR_UpdateVisibleWaypoint"));
+    getPhysicalGroup = reinterpret_cast<GetPhysicalGroupFn>(GetProcAddress(library, "STR_GetPhysicalCaravanGroup"));
+    rebindPhysicalGroup = reinterpret_cast<RebindPhysicalGroupFn>(GetProcAddress(library, "STR_RebindPhysicalCaravanGroup"));
+    releaseVisible = reinterpret_cast<VisibleReleaseFn>(GetProcAddress(library, "STR_ReleaseVisibleCaravan"));
     caravanLoss = reinterpret_cast<CaravanLossFn>(GetProcAddress(library, "STR_ReportCaravanLoss"));
     caravanArrival = reinterpret_cast<CaravanArrivalFn>(GetProcAddress(library, "STR_ReportCaravanArrival"));
     trackedCount = reinterpret_cast<TrackedCountFn>(GetProcAddress(library, "STR_GetTrackedItemCount"));
     trackedBase = reinterpret_cast<TrackedValueFn>(GetProcAddress(library, "STR_GetTrackedItemBaseValue"));
     trackedKind = reinterpret_cast<TrackedValueFn>(GetProcAddress(library, "STR_GetTrackedItemKind"));
     trackedKey = reinterpret_cast<TrackedKeyFn>(GetProcAddress(library, "STR_CopyTrackedItemKey"));
-    if (!initialize || !advance || !syncWorldDay || !price || !trade || !copyError || !copyState || !loadState ||
-        !copyManifest || !caravanLoss || !caravanArrival || !trackedCount || !trackedBase || !trackedKind || !trackedKey)
+    if (!initialize || !advance || !syncWorldDay || !price || !trade || !tradeAuto || !copyError || !copyState || !loadState ||
+        !copyManifest || !copyStatus || !copyVisiblePlan || !copyPhysicalPlan || !confirmVisibleSpawn ||
+        !confirmPhysicalSpawn || !confirmPhysicalGroup || !updateVisibleWaypoint || !getPhysicalGroup ||
+        !rebindPhysicalGroup || !releaseVisible ||
+        !caravanLoss || !caravanArrival || !trackedCount || !trackedBase || !trackedKind || !trackedKey)
         return "Native economy DLL lacks one or more required entry points.";
     configFile = Utf8Path(configPath);
     catalogFile = Utf8Path(catalogPath);
@@ -126,6 +159,63 @@ bool CopyCaravanManifest(std::vector<std::byte>& output)
     const int actual = copyManifest(reinterpret_cast<char*>(output.data()), required);
     return actual == required;
 }
+bool CopyStatus(std::vector<std::byte>& output)
+{
+    if (!ready) return false;
+    const int required = copyStatus(nullptr, 0);
+    if (required <= 0 || required > 16 * 1024 * 1024) return false;
+    output.resize(required);
+    return copyStatus(reinterpret_cast<char*>(output.data()), required) == required;
+}
+bool CopyVisibleCaravanPlan(const char* region, std::vector<std::byte>& output)
+{
+    if (!ready || !region) return false;
+    const int required = copyVisiblePlan(region, nullptr, 0);
+    if (required <= 0 || required > 16 * 1024 * 1024) return false;
+    output.resize(required);
+    return copyVisiblePlan(region, reinterpret_cast<char*>(output.data()), required) == required;
+}
+bool CopyPhysicalCaravanPlan(const char* region, std::vector<std::byte>& output)
+{
+    if (!ready || !region) return false;
+    const int required = copyPhysicalPlan(region, nullptr, 0);
+    if (required <= 0 || required > 1024 * 1024) return false;
+    output.resize(required);
+    return copyPhysicalPlan(region, reinterpret_cast<char*>(output.data()), required) == required;
+}
+int ConfirmVisibleCaravanSpawn(long long shipmentId, const char* region, unsigned int leaderFormId)
+{
+    return confirmVisibleSpawn && region ? confirmVisibleSpawn(shipmentId, region, leaderFormId) : -1;
+}
+int ConfirmPhysicalCaravanSpawn(long long shipmentId, const char* region, unsigned int leaderFormId)
+{
+    return confirmPhysicalSpawn && region ? confirmPhysicalSpawn(shipmentId, region, leaderFormId) : -1;
+}
+int ConfirmPhysicalCaravanGroup(long long shipmentId, const char* region, unsigned int leaderFormId,
+    unsigned int packFormId, unsigned int guardFormId)
+{
+    return confirmPhysicalGroup && region ?
+        confirmPhysicalGroup(shipmentId, region, leaderFormId, packFormId, guardFormId) : -1;
+}
+int UpdateVisibleWaypoint(long long shipmentId, unsigned int leaderFormId, int waypointIndex, int anchorCount)
+{
+    return updateVisibleWaypoint ? updateVisibleWaypoint(shipmentId, leaderFormId, waypointIndex, anchorCount) : -1;
+}
+int GetPhysicalCaravanGroup(long long& shipmentId, unsigned int& leaderFormId,
+    unsigned int& packFormId, unsigned int& guardFormId)
+{
+    return getPhysicalGroup ? getPhysicalGroup(&shipmentId, &leaderFormId, &packFormId, &guardFormId) : -1;
+}
+int RebindPhysicalCaravanGroup(long long shipmentId, unsigned int oldLeaderFormId,
+    unsigned int leaderFormId, unsigned int packFormId, unsigned int guardFormId)
+{
+    return rebindPhysicalGroup ? rebindPhysicalGroup(shipmentId, oldLeaderFormId,
+        leaderFormId, packFormId, guardFormId) : -1;
+}
+int ReleaseVisibleCaravan(long long shipmentId, unsigned int leaderFormId)
+{
+    return releaseVisible ? releaseVisible(shipmentId, leaderFormId) : -1;
+}
 bool GetTrackedItems(std::vector<TrackedItem>& output)
 {
     if (!ready) return false;
@@ -160,6 +250,10 @@ int GetPrice(const char* region, const char* formKey)
 int ApplyTrade(long long sequence, const char* region, const char* formKey, int netSoldToMerchant)
 {
     return trade && region && formKey ? trade(sequence, region, formKey, netSoldToMerchant) : -1;
+}
+long long ApplyTradeAuto(const char* region, const char* formKey, int netSoldToMerchant)
+{
+    return tradeAuto && region && formKey ? tradeAuto(region, formKey, netSoldToMerchant) : -1;
 }
 int ReportCaravanLoss(long long sequence, long long shipmentId, int lostQuantity)
 {

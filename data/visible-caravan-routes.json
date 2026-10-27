@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    { "routeId": "whiterun-riften", "enabled": false, "navmeshVerified": false },
+    { "routeId": "riften-whiterun", "enabled": false, "navmeshVerified": false },
+    { "routeId": "markarth-whiterun", "enabled": false, "navmeshVerified": false },
+    { "routeId": "whiterun-markarth", "enabled": false, "navmeshVerified": false }
+  ],
+  "cargoItems": [
+    { "formKey": "05ACE4:Skyrim.esm", "commodity": "iron", "units": 2 },
+    { "formKey": "071CF3:Skyrim.esm", "commodity": "iron", "units": 1 },
+    { "formKey": "064B2E:Skyrim.esm", "commodity": "food", "units": 1 },
+    { "formKey": "065C97:Skyrim.esm", "commodity": "food", "units": 1 }
+  ]
+}

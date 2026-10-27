@@ -12,4 +12,5 @@ public sealed class NativeStateEnvelope
 }
 
 [JsonSerializable(typeof(NativeStateEnvelope))]
+[JsonSerializable(typeof(RuntimeSettings))]
 public partial class NativeJsonContext : JsonSerializerContext;

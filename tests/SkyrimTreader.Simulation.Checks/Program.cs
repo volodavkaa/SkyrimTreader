@@ -216,6 +216,134 @@ Check("Caravan manifest follows active cargo and stable shipment IDs", () =>
     True(CaravanManifest.Create(engine).Caravans.All(x => x.ShipmentId != shipment.Id));
 });
 
+Check("Economy status reports stock, prices, caravans and recent events", () =>
+{
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var status = EconomyStatus.Create(config, engine);
+    Equal(5, status.Day);
+    Equal(engine.State.Regions["riften"]["iron"].Stock, status.Regions["riften"]["iron"].Stock);
+    Equal(engine.RegionalBaseValue("riften", "iron"), status.Regions["riften"]["iron"].RegionalBaseValue);
+    Equal(CaravanManifest.Create(engine).Caravans.Count, status.Caravans.Count);
+    True(status.RecentEvents.Count > 0 && status.RecentEvents.Count <= 20);
+});
+
+Check("Visible caravan binding survives save/load and retires once", () =>
+{
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var plan = engine.PlanVisibleCaravan("whiterun")!;
+    Equal(VisibleCaravanAction.Spawn, plan.Action);
+    True(plan.ShipmentId > 0 && plan.LeaderFormId == 0);
+    const uint leaderId = 0xFF012345;
+    True(engine.ConfirmVisibleCaravanSpawn(plan.ShipmentId, "whiterun", leaderId));
+    True(!engine.ConfirmVisibleCaravanSpawn(plan.ShipmentId, "whiterun", leaderId));
+    Equal(VisibleCaravanAction.Keep, engine.PlanVisibleCaravan("whiterun")!.Action);
+    Equal(VisibleCaravanAction.Retire, engine.PlanVisibleCaravan("whiterun", visibleEnabled: false)!.Action);
+    var saved = JsonSerializer.Deserialize<SimulationState>(JsonSerializer.Serialize(engine.State, EconomyJson.Options), EconomyJson.Options)!;
+    var resumed = new EconomyEngine(config, saved);
+    Equal(leaderId, resumed.PlanVisibleCaravan("whiterun")!.LeaderFormId);
+    resumed.AdvanceDays(4);
+    True(resumed.State.Shipments.Single(x => x.Id == plan.ShipmentId).Status is
+        ShipmentStatus.Arrived or ShipmentStatus.Destroyed);
+    Equal(VisibleCaravanAction.Retire, resumed.PlanVisibleCaravan("whiterun")!.Action);
+    True(resumed.ReleaseVisibleCaravan(plan.ShipmentId, leaderId));
+    True(!resumed.ReleaseVisibleCaravan(plan.ShipmentId, leaderId));
+    True(resumed.PlanVisibleCaravan("whiterun")?.ShipmentId != plan.ShipmentId);
+    _ = new EconomyEngine(config, resumed.State);
+});
+
+Check("Physical road gate and cargo units are consistent with the shipment", () =>
+{
+    var catalog = new ItemCatalog { SchemaVersion = 1, Records =
+    [
+        new() { FormKey = "05ACE4:Skyrim.esm", Commodity = "iron", Units = 2 },
+        new() { FormKey = "071CF3:Skyrim.esm", Commodity = "iron", Units = 1 },
+        new() { FormKey = "064B2E:Skyrim.esm", Commodity = "food", Units = 1 }
+    ] };
+    var roads = new PhysicalCaravanRoutes
+    {
+        Routes = config.Routes.Select(x => new PhysicalCaravanRoute
+        {
+            RouteId = x.Id, Enabled = true, NavmeshVerified = true,
+            Worldspace = "00003C:Skyrim.esm",
+            Anchors = ["000100:Test.esp", "000101:Test.esp"],
+            SpawnMarker = "000102:Test.esp", RetireMarker = "000103:Test.esp",
+            MinPlayerDistance = 1000, MaxPlayerDistance = 5000, StuckTimeoutSeconds = 30
+        }).ToList(),
+        CargoItems =
+        [
+            new() { FormKey = "05ACE4:Skyrim.esm", Commodity = "iron", Units = 2 },
+            new() { FormKey = "071CF3:Skyrim.esm", Commodity = "iron", Units = 1 },
+            new() { FormKey = "064B2E:Skyrim.esm", Commodity = "food", Units = 1 }
+        ]
+    };
+    roads.Validate(config, catalog);
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var plan = roads.Plan(engine, "whiterun")!;
+    Equal(VisibleCaravanAction.Spawn, plan.Shipment.Action);
+    Equal(plan.Shipment.RemainingQuantity,
+        plan.Cargo.Sum(x => x.Count * x.UnitsEach) + plan.UnrepresentedUnits);
+    True(plan.Cargo.All(x => x.Count > 0));
+    roads.Routes.ForEach(x => x.Enabled = false);
+    True(roads.Plan(engine, "whiterun") is null);
+    roads.Routes[0].Enabled = true;
+    roads.Routes[0].NavmeshVerified = false;
+    try { roads.Validate(config, catalog); throw new Exception("Expected unverified route rejection."); }
+    catch (InvalidDataException) { }
+});
+
+Check("A disabled road retires an already visible group without duplicating cargo", () =>
+{
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var candidate = engine.PlanVisibleCaravan("whiterun")!;
+    True(engine.ConfirmVisibleCaravanSpawn(candidate.ShipmentId, "whiterun", 0xFF000111));
+    Equal(VisibleCaravanAction.Retire,
+        engine.PlanVisibleCaravan("whiterun", permittedRoutes: new HashSet<string>())!.Action);
+    True(engine.ReleaseVisibleCaravan(candidate.ShipmentId, 0xFF000111));
+    True(engine.PlanVisibleCaravan("whiterun", permittedRoutes: new HashSet<string>()) is null);
+});
+
+Check("Physical actor trio and waypoint survive save/load and FormID remapping", () =>
+{
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var candidate = engine.PlanVisibleCaravan("whiterun")!;
+    var allowed = new HashSet<string> { candidate.RouteId };
+    var commodities = new HashSet<string> { candidate.Commodity };
+    True(engine.ConfirmPhysicalCaravanGroup(candidate.ShipmentId, "whiterun",
+        0xFF000111, 0xFF000112, 0xFF000113, allowed, commodities));
+    True(!engine.ConfirmPhysicalCaravanGroup(candidate.ShipmentId, "whiterun",
+        0xFF000111, 0xFF000112, 0xFF000113, allowed, commodities));
+    True(engine.UpdateVisibleWaypoint(candidate.ShipmentId, 0xFF000111, 1, 3));
+    True(!engine.UpdateVisibleWaypoint(candidate.ShipmentId, 0xFF000111, 1, 3));
+    var saved = JsonSerializer.Deserialize<SimulationState>(JsonSerializer.Serialize(engine.State, EconomyJson.Options), EconomyJson.Options)!;
+    var resumed = new EconomyEngine(config, saved);
+    var kept = resumed.PlanVisibleCaravan("whiterun", permittedRoutes: allowed)!;
+    Equal(VisibleCaravanAction.Keep, kept.Action);
+    Equal((uint)0xFF000112, kept.PackFormId);
+    Equal(1, kept.WaypointIndex);
+    True(resumed.RebindPhysicalCaravanGroup(candidate.ShipmentId, 0xFF000111,
+        0xFF100111, 0xFF100112, 0xFF100113));
+    Equal((uint)0xFF100111, resumed.PlanVisibleCaravan("whiterun")!.LeaderFormId);
+    True(resumed.ReleaseVisibleCaravan(candidate.ShipmentId, 0xFF100111));
+});
+
+Check("A blocked road refuses physical arrival without double delivery", () =>
+{
+    var engine = new EconomyEngine(config, seed: 42);
+    engine.AdvanceDays(5);
+    var shipment = engine.State.Shipments.First(x => x.RouteId == "whiterun-riften" &&
+        x.Status is ShipmentStatus.InTransit or ShipmentStatus.Delayed or ShipmentStatus.PartiallyLost);
+    var stock = engine.State.Regions["riften"][shipment.Commodity].Stock;
+    True(!engine.ReportCaravanArrival(1, shipment.Id));
+    Equal(stock, engine.State.Regions["riften"][shipment.Commodity].Stock);
+    Equal(1L, engine.State.LastCaravanEventSequence);
+    True(shipment.Status != ShipmentStatus.Arrived);
+});
+
 Check("Invalid non-finite economy settings are rejected", () =>
 {
     var invalid = EconomyJson.LoadConfig(configPath);
